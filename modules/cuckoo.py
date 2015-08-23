@@ -1,4 +1,4 @@
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
 try:
@@ -44,5 +44,23 @@ class Cuckoo(Module):
         try:
             response = requests.post(url, files=files)
         except requests.ConnectionError:
-            self.log('error', "Unable to connect to Cuckoo API at {0}:{1}".format(host, port))
+            self.log('error', "Unable to connect to Cuckoo API at '{0}'.".format(url))
             return
+        except Exception as e:
+            self.log('error', "Failed performing request at '{0}': {1}".format(url, e))
+            return
+
+        try:
+            parsed_response = response.json()
+        except Exception as e:
+            try:
+                parsed_response = response.json
+            except Exception as e:
+                self.log('error', "Failed parsing the response: {0}".format(e))
+                self.log('error', "Data:\n{}".format(response.content))
+                return
+
+        if 'task_id' in parsed_response:
+            self.log('info', "Task ID: {0}".format(parsed_response['task_id']))
+        else:
+            self.log('error', "Failed to parse the task id from the returned JSON ('{0}'): {1}".format(parsed_response, e))

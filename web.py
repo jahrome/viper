@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
 import os
@@ -15,8 +15,11 @@ import requests
 import argparse
 import tempfile
 import contextlib
+import tarfile
 
 from zipfile import ZipFile
+from gzip import GzipFile
+from bz2 import BZ2File
 from bottle import route, request, response, run, get, template, static_file, redirect
 
 from viper.core.session import __sessions__
@@ -27,6 +30,7 @@ from viper.core.storage import store_sample, get_sample_path
 from viper.core.database import Database
 from viper.common import network
 from viper.core.ui.commands import Commands
+from viper.common.constants import VIPER_ROOT
 
 ##
 # User Config
@@ -58,7 +62,7 @@ mod_dicts['office'] = {'meta':'-m', 'oleid':'-o', 'streams':'-s', 'export':'-e'}
 mod_dicts['pdf'] = {'id':'id', 'streams':'streams'}
 mod_dicts['pe'] = {'imports':'imports', 'exports':'exports', 'res':'resources', 'imp':'imphash', 'compile':'compiletime', 'peid':'peid', 'security':'security', 'language':'language', 'sections':'sections', 'pehash':'pehash'}
 mod_dicts['rat'] = {'auto':'-a', 'list': '-l'}
-mod_dicts['reports'] = {'malwr':'malwr', 'anubis':'anubis', 'threat':'threat', 'joe':'joe', 'meta':'meta'}
+mod_dicts['reports'] = {'malwr':'--malwr', 'anubis':'--anubis', 'threat':'--threat', 'joe':'--joe', 'meta':'--meta'}
 mod_dicts['shellcode'] = {'run':''}
 mod_dicts['strings'] = {'all':'-a', 'hosts':'-H'}
 mod_dicts['swf'] = {'decom':'decompress'}
@@ -218,7 +222,7 @@ def upload_temp():
 #Returns Static files e.g. CSS / JS
 @get('/static/:path#.+#')
 def server_static(path):
-    return static_file(path, root='data/web/static')    
+    return static_file(path, root=os.path.join(VIPER_ROOT, 'data/web/static'))
 
 # Index Page
 @route("/")
@@ -328,7 +332,7 @@ def add_file():
             with open(file_path, 'w') as tmp_file:
                 tmp_file.write(upload.file.read())
             # Zip Files
-            if request.forms.get('unzip'):
+            if request.forms.get('compression') == 'zip':
                 zip_pass = request.forms.get('zip_pass')
                 try:
                     with ZipFile(file_path) as zf:
@@ -339,8 +343,43 @@ def add_file():
                                 file_list.append(os.path.join(root, name))
                 except Exception as e:
                     return template('error.tpl', error="Error with zipfile - {0}".format(e))
+            # GZip Files
+            elif request.forms.get('compression') == 'gz':
+                try:
+                    gzf = GzipFile(file_path, 'rb')
+                    decompress = gzf.read()
+                    gzf.close()
+                    with open(file_path[:-3],"wb") as df:
+                        df.write(decompress)
+                    file_list.append(file_path[:-3])
+                except Exception as e:
+                    return template('error.tpl', error="Error with gzipfile - {0}".format(e))
+            # BZip2 Files
+            elif request.forms.get('compression') == 'bz2':
+                try:
+                    bz2f = BZ2File(file_path, 'rb')
+                    decompress = bz2f.read()
+                    bz2f.close()
+                    with open(file_path[:-3],"wb") as df:
+                        df.write(decompress)
+                    file_list.append(file_path[:-3])
+                except Exception as e:
+                    return template('error.tpl', error="Error with bzip2file - {0}".format(e))
+            # Tar Files (any, including tar.gz tar.bz2)
+            elif request.forms.get('compression') == 'tar':
+                try:
+                    if not tarfile.is_tarfile(file_path):
+                        return template('error.tpl', error="This is not a tar file")
+                    with tarfile.open(file_path,'r:*') as tarf:
+                        tarf.extractall(temp_dir)
+                    for root, dirs, files in os.walk(temp_dir, topdown=False):
+                        for name in files:
+                            if not name == upload.filename:
+                                file_list.append(os.path.join(root, name))
+                except Exception as e:
+                    return template('error.tpl', error="Error with tarfile - {0}".format(e))
             # Non zip files
-            else:
+            elif request.forms.get('compression') == 'none':
                 file_list.append(file_path)
             
         # Add each file
@@ -461,8 +500,8 @@ def find_file():
 
 # Tags
 @route('/tags', method='GET')
-@route('/tags/add', method='POST')    
-def tags():
+@route('/tags/<tag_action>', method='POST')    
+def tags(tag_action=False):
     # Set DB
     db = Database()
     
@@ -472,10 +511,7 @@ def tags():
         value = request.query.value.strip()
         
         if value:
-            if action == 'delete':
-                # Delete individual tags is not in viper yet
-                pass
-            elif action == 'search':
+            if action == 'search':
                 # This will search all projects
                 # Get project list
                 projects = project_list()
@@ -502,15 +538,19 @@ def tags():
             else:
                 return template('error.tpl', error="'{0}' Is not a valid tag action".format(action))
                              
-    # Add New Tags
+    # Add / Delete                        
     if request.method == 'POST':
         file_hash = request.forms.get('sha256')
         project = request.forms.get('project')
-        if file_hash and project:
-            tags = request.forms.get('tags')
-            db.add_tags(file_hash, tags)
-            redirect('/file/{0}/{1}'.format(project, file_hash))
-    
+        tag_name = request.forms.get('tag')
+        if tag_action == 'add':
+            if file_hash and project:
+                tags = request.forms.get('tags')
+                db.add_tags(file_hash, tags)
+        if tag_action == 'del':
+            if file_hash and tag_name:
+                db.delete_tag(tag_name, file_hash)
+        redirect('/file/{0}/{1}'.format(project, file_hash))
 
 # Notes Add, Update, Delete
 @route('/file/notes', method='POST')
@@ -568,7 +608,7 @@ def run_module():
 def yara_rules():
     
     # Get list of Rules
-    rule_path = 'data/yara'
+    rule_path = os.path.join(VIPER_ROOT, 'data/yara')
     rule_list = os.listdir(rule_path)
     
     # GET is for listing Rules
@@ -638,7 +678,7 @@ def cuckoo_submit():
         if check_file.status_code == 200:
             check_result =  dict(check_file.json())
             cuckoo_id = check_result['sample']['id']
-            return '<a href="{0}/analysis/{1}" target="_blank"> Link To Cukoo Report</a>'.format(cuckoo_web, str(cuckoo_id))
+            return '<a href="{0}/submit/status/{1}" target="_blank"> Link To Cukoo Report</a>'.format(cuckoo_web, str(cuckoo_id))
     except Exception as e:
         return '<span class="alert alert-danger">Error Connecting To Cuckoo</span>'
     
@@ -655,7 +695,7 @@ def cuckoo_submit():
         cuckoo_response = requests.post(uri, files=options)
         if cuckoo_response.status_code == 200:
             cuckoo_id = dict(cuckoo_response.json())['task_id']
-            return '<a href="{0}/analysis/{1}" target="_blank"> Link To Cukoo Report</a>'.format(cuckoo_web, str(cuckoo_id))
+            return '<a href="{0}/submit/status/{1}" target="_blank"> Link To Cukoo Report</a>'.format(cuckoo_web, str(cuckoo_id))
     else:
         return '<span class="alert alert-danger">Unable to Submit File</span>'
     
@@ -732,5 +772,5 @@ if __name__ == '__main__':
         os.mkdir('projects')
     
     # Set template dir
-    bottle.TEMPLATE_PATH.insert(0,'data/web')
+    bottle.TEMPLATE_PATH.insert(0,os.path.join(VIPER_ROOT, 'data/web'))
     run(host=args.host, port=web_port, reloader=True)

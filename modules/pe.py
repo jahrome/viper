@@ -1,4 +1,4 @@
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
 import os
@@ -6,6 +6,8 @@ import re
 import datetime
 import tempfile
 import time
+
+from viper.common.constants import VIPER_ROOT
 
 try:
     import pefile
@@ -45,6 +47,11 @@ class PE(Module):
         subparsers = self.parser.add_subparsers(dest='subname')
         subparsers.add_parser('imports', help='List PE imports')
         subparsers.add_parser('exports', help='List PE exports')
+
+        parser_ep = subparsers.add_parser('entrypoint', help='Show and scan for AddressOfEntryPoint')
+        parser_ep.add_argument('-a', '--all', action='store_true', help='Prints the AddressOfEntryPoint of all files in the project')
+        parser_ep.add_argument('-c', '--cluster', action='store_true', help='Cluster all files in the project')
+        parser_ep.add_argument('-s', '--scan', action='store_true', help='Scan repository for matching samples')
 
         parser_res = subparsers.add_parser('resources', help='List PE resources')
         parser_res.add_argument('-d', '--dump', metavar='folder', help='Destination directory to store resource files in')
@@ -115,6 +122,97 @@ class PE(Module):
             for symbol in self.pe.DIRECTORY_ENTRY_EXPORT.symbols:
                 self.log('item', "{0}: {1} ({2})".format(hex(self.pe.OPTIONAL_HEADER.ImageBase + symbol.address), symbol.name, symbol.ordinal))
 
+    def entrypoint(self):
+        if self.args.scan and self.args.cluster:
+            self.log('error', "You selected two exclusive options, pick one")
+            return
+
+        if self.args.all:
+            db = Database()
+            samples = db.find(key='all')
+
+            rows = []
+            for sample in samples:
+                sample_path = get_sample_path(sample.sha256)
+                if not os.path.exists(sample_path):
+                    continue
+
+                try:
+                    cur_ep = pefile.PE(sample_path).OPTIONAL_HEADER.AddressOfEntryPoint
+                except:
+                    continue
+
+                rows.append([sample.md5, sample.name, cur_ep])
+
+            self.log('table', dict(header=['MD5', 'Name', 'AddressOfEntryPoint'], rows=rows))
+
+            return
+
+        if self.args.cluster:
+            db = Database()
+            samples = db.find(key='all')
+
+            cluster = {}
+            for sample in samples:
+                sample_path = get_sample_path(sample.sha256)
+                if not os.path.exists(sample_path):
+                    continue
+
+                try:
+                    cur_ep = pefile.PE(sample_path).OPTIONAL_HEADER.AddressOfEntryPoint
+                except:
+                    continue
+
+                if cur_ep not in cluster:
+                    cluster[cur_ep] = []
+
+                cluster[cur_ep].append([sample.md5, sample.name])
+
+            for cluster_name, cluster_members in cluster.items():
+                # Skipping clusters with only one entry.
+                if len(cluster_members) == 1:
+                    continue
+
+                self.log('info', "AddressOfEntryPoint cluster {0}".format(bold(cluster_name)))
+
+                self.log('table', dict(header=['MD5', 'Name'],
+                    rows=cluster_members))
+
+            return
+
+        if not self.__check_session():
+            return
+
+        ep = self.pe.OPTIONAL_HEADER.AddressOfEntryPoint
+
+        self.log('info', "AddressOfEntryPoint: {0}".format(ep))
+
+        if self.args.scan:
+            db = Database()
+            samples = db.find(key='all')
+
+            rows = []
+            for sample in samples:
+                if sample.sha256 == __sessions__.current.file.sha256:
+                    continue
+
+                sample_path = get_sample_path(sample.sha256)
+                if not os.path.exists(sample_path):
+                    continue
+
+                try:
+                    cur_ep = pefile.PE(sample_path).OPTIONAL_HEADER.AddressOfEntryPoint
+                except:
+                    continue
+
+                if ep == cur_ep:
+                    rows.append([sample.md5, sample.name])
+
+            self.log('info', "Following are samples with AddressOfEntryPoint {0}".format(bold(ep)))
+
+            self.log('table', dict(header=['MD5', 'Name'],
+                rows=rows))
+
     def compiletime(self):
 
         def get_compiletime(pe):
@@ -168,7 +266,7 @@ class PE(Module):
     def peid(self):
 
         def get_signatures():
-            with file('data/peid/UserDB.TXT', 'rt') as f:
+            with file(os.path.join(VIPER_ROOT, 'data/peid/UserDB.TXT'), 'rt') as f:
                 sig_data = f.read()
 
             signatures = peutils.SignatureDatabase(data=sig_data)
@@ -297,7 +395,7 @@ class PE(Module):
         if self.args.dump or self.args.open:
             headers.append('Dumped To')
 
-        print table(headers, resources)
+        self.log('table', dict(header=headers, rows=resources))
 
         # If instructed, open a session on the given resource.
         if self.args.open:
@@ -380,17 +478,15 @@ class PE(Module):
 
                 cluster[cur_imphash].append([sample.sha256, sample.name])
 
-            for key, value in cluster.items():
+            for cluster_name, cluster_members in cluster.items():
                 # Skipping clusters with only one entry.
-                if len(value) == 1:
+                if len(cluster_members) == 1:
                     continue
 
-                self.log('info', "Imphash cluster {0}".format(bold(key)))
+                self.log('info', "Imphash cluster {0}".format(bold(cluster_name)))
 
-                for entry in value:
-                    self.log('item', "{0} [{1}]".format(entry[0], entry[1]))
-
-                self.log('', "")
+                self.log('table', dict(header=['MD5', 'Name'],
+                    rows=cluster_members))
 
             return
 
@@ -798,6 +894,7 @@ class PE(Module):
             self.log('info', "PEhash for all files:")
             header = ['Name', 'MD5', 'PEhash']
             self.log('table', dict(header=header, rows=rows))
+
         elif self.args.cluster:
             self.log('info', "Clustering files by PEhash...")
 
@@ -807,8 +904,9 @@ class PE(Module):
 
             for item in cluster.items():
                 if len(item[1]) > 1:
-                    self.log('info', "PEhash {0} was calculated on files:".format(bold(item[0])))
+                    self.log('info', "PEhash cluster {0}:".format(bold(item[0])))
                     self.log('table', dict(header=['Name', 'MD5'], rows=item[1]))
+
         elif self.args.scan:
             if __sessions__.is_set() and current_pehash:
                 self.log('info', "Finding matching samples...")
@@ -855,3 +953,5 @@ class PE(Module):
             self.language()
         elif self.args.subname == 'pehash':
             self.pehash()
+        elif self.args.subname == 'entrypoint':
+            self.entrypoint()

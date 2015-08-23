@@ -1,4 +1,4 @@
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
 try:
@@ -134,7 +134,7 @@ class ELF(Module):
             return
 
         if not HAVE_ELFTOOLS:
-            self.log('error', "Missing dependency, install pyelftools (`pip install pyelftools")
+            self.log('error', "Missing dependency, install pyelftools (`pip install pyelftools`)")
             return
 
         if self.args.sections:

@@ -1,4 +1,4 @@
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
 import os
@@ -21,7 +21,7 @@ def logo():
    _   _ _ ____  _____  ____ 
   | | | | |  _ \| ___ |/ ___)
    \ V /| | |_| | ____| |    
-    \_/ |_|  __/|_____)_| v1.2
+    \_/ |_|  __/|_____)_| v1.3-dev
           |_|
     """)
 
@@ -180,7 +180,13 @@ class Console(object):
                 prefix = bold(cyan(__project__.name)) + ' '
 
             if __sessions__.is_set():
-                prompt = prefix + cyan('viper ', True) + white(__sessions__.current.file.name, True) + cyan(' > ', True)
+                stored = ''
+                if not Database().find(key='sha256',value=__sessions__.current.file.sha256):
+                    stored = magenta(' [not stored]', True)
+
+                prompt = (prefix + cyan('viper ', True) + 
+                    white(__sessions__.current.file.name, True) + 
+                    stored + cyan(' > ', True))
             # Otherwise display the basic prompt.
             else:
                 prompt = prefix + cyan('viper > ', True)
@@ -205,15 +211,11 @@ class Console(object):
                     continue
                 
                 # Check for output redirection
-                # If there is a > in the string, we assume 
-                # the user wants to output to file
+                # If there is a > in the string, we assume the user wants to output to file.
+                filename = False
                 if '>' in data:
-                    try:
-                        data, filename = data.split('>')
-                    except:
-                        filename = False
-                else:
-                    filename = False
+                    data, filename = data.split('>')
+
                 # If the input starts with an exclamation mark, we treat the
                 # input as a bash command and execute it.
                 # At this point the keywords should be replaced.
